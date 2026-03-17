@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -34,7 +35,7 @@ func main() {
 	proxy.Director = proxyDirector(backendURL)
 
 	// Tune the transport for higher throughput and connection reuse.
-	proxy.Transport = &http.Transport{
+	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   100,
@@ -42,6 +43,9 @@ func main() {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+	proxy.Transport = transport
+
+	client := &http.Client{Transport: transport}
 
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
 		log.Printf("proxy error: %v", err)
@@ -58,10 +62,15 @@ func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	logRequests := strings.EqualFold(os.Getenv("API_GATEWAY_LOG"), "true")
+	useDirectProxy := strings.EqualFold(os.Getenv("API_GATEWAY_MODE"), "direct")
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if logRequests {
 			log.Printf("%s %s %s", r.RemoteAddr, r.Method, r.URL)
+		}
+		if useDirectProxy {
+			directProxy(w, r, backendURL, client)
+			return
 		}
 		proxy.ServeHTTP(w, r)
 	})
@@ -105,4 +114,38 @@ func proxyDirector(backendURL *url.URL) func(*http.Request) {
 			}
 		}
 	}
+}
+
+func directProxy(w http.ResponseWriter, r *http.Request, backendURL *url.URL, client *http.Client) {
+	// Build target URL from incoming request.
+	targetURL := *r.URL
+	targetURL.Scheme = backendURL.Scheme
+	targetURL.Host = backendURL.Host
+
+	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("Bad Gateway"))
+		return
+	}
+
+	// Copy headers
+	outReq.Header = r.Header.Clone()
+	outReq.Host = backendURL.Host
+
+	resp, err := client.Do(outReq)
+	if err != nil {
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte("Bad Gateway"))
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
