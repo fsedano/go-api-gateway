@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -93,6 +94,8 @@ func main() {
 	}
 }
 
+var copyBufferPool = sync.Pool{New: func() interface{} { return make([]byte, 32*1024) }}
+
 func proxyDirector(backendURL *url.URL) func(*http.Request) {
 	return func(req *http.Request) {
 		// Preserve the original request path and query.
@@ -147,5 +150,8 @@ func directProxy(w http.ResponseWriter, r *http.Request, backendURL *url.URL, cl
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+
+	buf := copyBufferPool.Get().([]byte)
+	defer copyBufferPool.Put(buf)
+	_, _ = io.CopyBuffer(w, resp.Body, buf)
 }
