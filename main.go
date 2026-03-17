@@ -6,6 +6,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -52,6 +53,9 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte("{\"status\":\"ok\"}"))
 	})
+
+	// Ensure the runtime uses all available cores.
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	logRequests := strings.EqualFold(os.Getenv("API_GATEWAY_LOG"), "true")
 
